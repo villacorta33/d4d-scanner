@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D4D Batch Scanner</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080808;--s1:#0f0f0f;--s2:#161616;--s4:#262626;
+  --border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.1);
+  --text:#efefef;--muted:#6b6b6b;--muted2:#3d3d3d;
+  --lime:#b8f542;--lime-dim:rgba(184,245,66,0.08);
+  --red:#f56060;--rdim:rgba(245,96,96,0.1);
+  --amber:#f5a623;--green:#52d68a;--gdim:rgba(82,214,138,0.1);
+  --r:8px;--r2:12px;
+}
+body{font-family:'Geist',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:13px;line-height:1.5}
+.wrap{max-width:680px;margin:0 auto;padding:32px 20px 80px}
+.hdr{display:flex;align-items:center;gap:12px;margin-bottom:32px}
+.hdr-mark{width:36px;height:36px;background:var(--lime);border-radius:8px;display:grid;place-items:center;flex-shrink:0}
+.hdr-mark svg{width:18px;height:18px;fill:#080808}
+.hdr-title{font-size:20px;font-weight:600;letter-spacing:-.5px}
+.hdr-sub{font-size:11px;color:var(--muted);font-family:'Geist Mono',monospace;margin-top:1px}
+.step{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:12px;overflow:hidden}
+.step-hdr{display:flex;align-items:center;gap:12px;padding:16px 18px;cursor:pointer;user-select:none}
+.step-num{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700;font-family:'Geist Mono',monospace;flex-shrink:0;background:var(--s4);color:var(--muted)}
+.step.active .step-num{background:var(--lime);color:#080808}
+.step.done .step-num{background:var(--gdim);color:var(--green);font-size:12px}
+.step-title{font-size:13px;font-weight:500;flex:1}
+.step-status{font-size:10px;color:var(--muted);font-family:'Geist Mono',monospace}
+.step.done .step-status{color:var(--green)}
+.step-body{padding:0 18px 18px;display:none}
+.step.active .step-body,.step.open .step-body{display:block}
+.key-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.key-card{background:var(--s2);border:1px solid var(--border2);border-radius:var(--r);padding:10px 12px}
+.key-card label{font-size:10px;color:var(--muted);display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px;font-family:'Geist Mono',monospace}
+.key-card input{width:100%;background:transparent;border:none;color:var(--text);font-family:'Geist Mono',monospace;font-size:11px;outline:none}
+.upzone{border:1px dashed var(--border2);border-radius:var(--r);padding:32px 24px;text-align:center;cursor:pointer;background:var(--s2);transition:all .2s;margin-bottom:10px}
+.upzone:hover,.upzone.drag{border-color:var(--lime);background:var(--lime-dim)}
+.upzone strong{display:block;font-size:13px;font-weight:500;margin-bottom:4px}
+.upzone p{font-size:11px;color:var(--muted)}
+.upzone input{display:none}
+.fpill{display:flex;align-items:center;gap:10px;padding:10px 13px;background:var(--s2);border:1px solid var(--border2);border-radius:var(--r);margin-bottom:10px}
+.fpill-t{flex:1;min-width:0}
+.fpill-n{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fpill-m{font-size:10px;color:var(--muted);font-family:'Geist Mono',monospace;margin-top:1px}
+.fpill-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:17px;padding:0;flex-shrink:0}
+.fpill-x:hover{color:var(--red)}
+.mapper{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.mrow label{font-size:10px;color:var(--muted);display:block;margin-bottom:4px;font-family:'Geist Mono',monospace;text-transform:uppercase;letter-spacing:.6px}
+.mrow select{width:100%;background:var(--s2);border:1px solid var(--border2);color:var(--text);font-size:11px;padding:7px 9px;border-radius:var(--r);font-family:'Geist Mono',monospace;cursor:pointer;outline:none}
+.mrow select:focus{border-color:var(--lime)}
+.settings-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}
+.si label{font-size:10px;color:var(--muted);display:block;margin-bottom:4px;font-family:'Geist Mono',monospace;text-transform:uppercase;letter-spacing:.6px}
+.si select{width:100%;background:var(--s2);border:1px solid var(--border2);color:var(--text);font-size:11px;padding:7px 9px;border-radius:var(--r);font-family:'Geist Mono',monospace;outline:none}
+.si select:focus{border-color:var(--lime)}
+.email-row{margin-bottom:10px}
+.email-row label{font-size:10px;color:var(--muted);display:block;margin-bottom:4px;font-family:'Geist Mono',monospace;text-transform:uppercase;letter-spacing:.6px}
+.email-row input{width:100%;background:var(--s2);border:1px solid var(--border2);color:var(--text);font-size:11px;padding:7px 9px;border-radius:var(--r);font-family:'Geist Mono',monospace;outline:none}
+.email-row input:focus{border-color:var(--lime)}
+.inote{font-size:11px;color:var(--muted);line-height:1.7;background:var(--lime-dim);border:1px solid rgba(184,245,66,.15);border-radius:var(--r);padding:10px 12px;margin-bottom:12px}
+.inote strong{color:var(--lime)}
+.scale-legend{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin-bottom:12px;font-size:10px;font-family:'Geist Mono',monospace}
+.scale-score{color:var(--lime);font-weight:600}
+.scale-desc{color:var(--muted)}
+.btn{width:100%;padding:12px;border-radius:var(--r);border:none;background:var(--lime);color:#080808;font-family:'Geist',sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover:not(:disabled){background:#ccff55;transform:translateY(-1px)}
+.btn:disabled{opacity:.35;cursor:not-allowed;transform:none}
+.btn-sm{padding:8px 16px;font-size:11px;width:auto;border-radius:var(--r)}
+.btn-outline{background:transparent;border:1px solid var(--border2);color:var(--muted)}
+.btn-outline:hover{color:var(--text)}
+.prog-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:20px;margin-bottom:12px}
+.prog-title{font-size:14px;font-weight:600;margin-bottom:4px}
+.prog-sub{font-size:11px;color:var(--muted);margin-bottom:14px;font-family:'Geist Mono',monospace}
+.prog-bar-wrap{height:6px;background:var(--s4);border-radius:3px;margin-bottom:14px}
+.prog-bar{height:6px;background:var(--lime);border-radius:3px;transition:width .5s}
+.stat-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.stat{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px}
+.stat-val{font-size:18px;font-weight:600;font-family:'Geist Mono',monospace;margin-bottom:2px}
+.stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.poll-row{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);font-family:'Geist Mono',monospace;margin-bottom:10px}
+.poll-dot{width:7px;height:7px;border-radius:50%;background:var(--lime);animation:pulse 1.5s infinite;flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.status-card{border-radius:var(--r2);padding:18px 20px;margin-bottom:12px}
+.status-card.ok{background:var(--gdim);border:1px solid rgba(82,214,138,.25)}
+.status-card.err{background:var(--rdim);border:1px solid rgba(245,96,96,.3)}
+.status-title{font-size:14px;font-weight:600;margin-bottom:5px}
+.status-sub{font-size:11px;color:var(--muted);line-height:1.7}
+.status-link{color:var(--lime);font-weight:600}
+.ebox{background:var(--rdim);border:1px solid rgba(245,96,96,.3);border-radius:var(--r);padding:10px 13px;font-size:11px;color:var(--red);line-height:1.7;margin-top:8px}
+.spin{width:13px;height:13px;border:2px solid rgba(8,8,8,.2);border-top-color:#080808;border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
+.spin-w{width:12px;height:12px;border:1.5px solid rgba(184,245,66,.2);border-top-color:var(--lime);border-radius:50%;animation:sp .7s linear infinite;display:inline-block;vertical-align:middle}
+@keyframes sp{to{transform:rotate(360deg)}}
+.upload-prog{height:4px;background:var(--s4);border-radius:2px;margin-top:8px;overflow:hidden;display:none}
+.upload-prog-bar{height:4px;background:var(--lime);border-radius:2px;transition:width .2s}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="hdr-mark"><svg viewBox="0 0 18 18"><path d="M9 1L17 5V13L9 17L1 13V5L9 1Z"/></svg></div>
+    <div>
+      <div class="hdr-title">D4D Batch Scanner</div>
+      <div class="hdr-sub">Claude Haiku 4.5 · Railway</div>
+    </div>
+  </div>
+
+  <!-- STEP 1: API Keys -->
+  <div class="step active" id="step1">
+    <div class="step-hdr" onclick="toggleStep('step1')">
+      <div class="step-num" id="s1n">1</div>
+      <div class="step-title">API Keys</div>
+      <div class="step-status" id="s1s">Required</div>
+    </div>
+    <div class="step-body">
+      <div class="key-row">
+        <div class="key-card">
+          <label>Google Maps API Key</label>
+          <input type="password" id="gm-key" placeholder="AIzaSy..." oninput="onKeyInput()">
+        </div>
+        <div class="key-card">
+          <label>Anthropic API Key</label>
+          <input type="password" id="cl-key" placeholder="sk-ant-..." oninput="onKeyInput()">
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:10px;color:var(--muted)">
+        <span>Maps: <a href="https://console.cloud.google.com" target="_blank" style="color:var(--lime)">console.cloud.google.com</a></span>
+        <span>Anthropic: <a href="https://platform.claude.com/settings/keys" target="_blank" style="color:var(--lime)">platform.claude.com/settings/keys</a></span>
+      </div>
+      <button class="btn" id="save-keys-btn" onclick="saveKeys()" disabled>Save keys</button>
+      <div id="keys-err"></div>
+    </div>
+  </div>
+
+  <!-- STEP 2: Upload CSV -->
+  <div class="step" id="step2">
+    <div class="step-hdr" onclick="toggleStep('step2')">
+      <div class="step-num" id="s2n">2</div>
+      <div class="step-title">Upload Deal Machine CSV</div>
+      <div class="step-status" id="s2s">Waiting</div>
+    </div>
+    <div class="step-body">
+      <div class="upzone" id="upzone" onclick="document.getElementById('csv-input').click()" ondragover="onDrag(event,true)" ondragleave="onDrag(event,false)" ondrop="onDrop(event)">
+        <strong>Click or drag your CSV here</strong>
+        <p>Any size — 10k, 50k, 100k+ records all work</p>
+        <input type="file" id="csv-input" accept=".csv" onchange="loadCSV(event)">
+      </div>
+      <div class="upload-prog" id="upload-prog"><div class="upload-prog-bar" id="upload-prog-bar" style="width:0%"></div></div>
+      <div class="fpill hidden" id="fpill">
+        <div class="fpill-t">
+          <div class="fpill-n" id="fpill-n"></div>
+          <div class="fpill-m" id="fpill-m"></div>
+        </div>
+        <button class="fpill-x" onclick="clearCSV()">&#215;</button>
+      </div>
+      <div id="upload-err"></div>
+    </div>
+  </div>
+
+  <!-- STEP 3: Map Columns -->
+  <div class="step" id="step3">
+    <div class="step-hdr" onclick="toggleStep('step3')">
+      <div class="step-num" id="s3n">3</div>
+      <div class="step-title">Map Columns</div>
+      <div class="step-status" id="s3s">Waiting</div>
+    </div>
+    <div class="step-body">
+      <div class="mapper" id="mapper"></div>
+      <div style="margin-bottom:8px">
+        <div class="mrow">
+          <label>Owner name column (optional)</label>
+          <select id="col-owner"></select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 4: Settings & Run -->
+  <div class="step" id="step4">
+    <div class="step-hdr" onclick="toggleStep('step4')">
+      <div class="step-num" id="s4n">4</div>
+      <div class="step-title">Settings &amp; Run</div>
+      <div class="step-status" id="s4s">Waiting</div>
+    </div>
+    <div class="step-body">
+      <div class="inote"><strong>Scoring:</strong> Claude Haiku 4.5 answers one question — how urgently should a wholesaler call this property? Any single major indicator = minimum 7.</div>
+      <div class="scale-legend">
+        <span class="scale-score">9-10</span><span class="scale-desc">Call today — multiple major indicators</span>
+        <span class="scale-score">7-8</span><span class="scale-desc">Strong lead — at least one major indicator</span>
+        <span class="scale-score">5-6</span><span class="scale-desc">Warm lead — significant distress signals</span>
+        <span class="scale-score">3</span><span class="scale-desc">Weak lead — minor signals only</span>
+        <span class="scale-score">1-2</span><span class="scale-desc">Skip — well maintained</span>
+      </div>
+      <div class="settings-grid">
+        <div class="si">
+          <label>Hot threshold</label>
+          <select id="threshold">
+            <option value="6">6+ / 10</option>
+            <option value="7" selected>7+ / 10</option>
+            <option value="8">8+ / 10</option>
+          </select>
+        </div>
+        <div class="si">
+          <label>Image source</label>
+          <select id="imagemode" onchange="onImageModeChange()">
+            <option value="streetview" selected>Street View only</option>
+            <option value="satellite">Satellite only</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+        <div class="si">
+          <label>Max properties</label>
+          <select id="maxprops">
+            <option value="10">10 (test)</option>
+            <option value="100">100</option>
+            <option value="500">500</option>
+            <option value="1000">1,000</option>
+            <option value="5000">5,000</option>
+            <option value="10000">10,000</option>
+            <option value="50000">50,000</option>
+            <option value="999999" selected>All</option>
+          </select>
+        </div>
+      </div>
+      <div class="settings-grid" style="margin-top:-4px">
+        <div class="si" id="pitch-wrap">
+          <label>SV Pitch</label>
+          <select id="pitch">
+            <option value="0">0° straight</option>
+            <option value="5" selected>5° slight up</option>
+            <option value="10">10° more up</option>
+            <option value="-5">-5° down</option>
+          </select>
+        </div>
+      </div>
+      <div id="image-mode-note" class="hidden" style="margin-bottom:8px;font-size:10px;color:var(--muted);font-family:'Geist Mono',monospace;background:var(--lime-dim);border:1px solid rgba(184,245,66,.15);border-radius:var(--r);padding:8px 10px;line-height:1.7"></div>
+      <div class="email-row">
+        <label>Email when complete (optional)</label>
+        <input type="email" id="email" placeholder="you@email.com">
+      </div>
+      <button class="btn" id="run-btn" onclick="startScan()" disabled><span id="run-lbl">Start batch scan</span></button>
+      <div id="run-err"></div>
+    </div>
+  </div>
+
+  <!-- PROGRESS -->
+  <div id="progress-section" class="hidden">
+    <div class="prog-card">
+      <div class="prog-title">Scan in progress</div>
+      <div class="prog-sub" id="prog-sub">Initializing...</div>
+      <div class="prog-bar-wrap"><div class="prog-bar" id="prog-bar" style="width:0%"></div></div>
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val" id="stat-fetched">0</div><div class="stat-lbl">Fetched</div></div>
+        <div class="stat"><div class="stat-val" id="stat-submitted">0</div><div class="stat-lbl">Submitted</div></div>
+        <div class="stat"><div class="stat-val" id="stat-elapsed">0m</div><div class="stat-lbl">Elapsed</div></div>
+      </div>
+      <div class="poll-row"><div class="poll-dot"></div><span id="poll-status">Processing...</span></div>
+    </div>
+  </div>
+
+  <div id="complete-card" class="status-card ok hidden">
+    <div class="status-title">✓ Scan complete!</div>
+    <div class="status-sub" id="complete-msg"></div>
+  </div>
+
+  <div id="error-card" class="status-card err hidden">
+    <div class="status-title">Scan failed</div>
+    <div class="status-sub" id="error-msg"></div>
+  </div>
+
+  <div id="new-scan-wrap" class="hidden" style="margin-top:12px">
+    <button class="btn btn-outline" onclick="resetForm()">Start a new scan</button>
+  </div>
+</div>
+
+<script>
+var fileId='',csvHeaders=[],keysSet=false,jobId=null,pollInterval=null,startTime=null;
+var gmKey='',clKey='';
+
+// Load saved keys from localStorage
+window.onload=function(){
+  gmKey=localStorage.getItem('d4d_gm_key')||'';
+  clKey=localStorage.getItem('d4d_cl_key')||'';
+  if(gmKey&&clKey){
+    document.getElementById('gm-key').value='••••••••';
+    document.getElementById('cl-key').value='••••••••';
+    setStepDone('step1','Keys saved');
+    keysSet=true;updateRunBtn();
+  }
+};
+
+function onKeyInput(){
+  var gm=document.getElementById('gm-key').value.trim();
+  var cl=document.getElementById('cl-key').value.trim();
+  document.getElementById('save-keys-btn').disabled=!(gm&&cl);
+}
+
+function saveKeys(){
+  var gm=document.getElementById('gm-key').value.trim();
+  var cl=document.getElementById('cl-key').value.trim();
+  if(!gm||!cl)return;
+  if(gm!=='••••••••')gmKey=gm;
+  if(cl!=='••••••••')clKey=cl;
+  localStorage.setItem('d4d_gm_key',gmKey);
+  localStorage.setItem('d4d_cl_key',clKey);
+  keysSet=true;
+  setStepDone('step1','Keys saved');
+  updateRunBtn();
+}
+
+function onDrag(e,on){e.preventDefault();document.getElementById('upzone').classList.toggle('drag',on);}
+function onDrop(e){e.preventDefault();onDrag(e,false);if(e.dataTransfer.files[0])uploadFile(e.dataTransfer.files[0]);}
+function loadCSV(e){if(e.target.files[0])uploadFile(e.target.files[0]);}
+
+function uploadFile(file){
+  document.getElementById('upzone').classList.add('hidden');
+  document.getElementById('upload-prog').style.display='block';
+  document.getElementById('upload-err').innerHTML='';
+
+  var formData=new FormData();
+  formData.append('csv',file);
+
+  var xhr=new XMLHttpRequest();
+  xhr.upload.onprogress=function(e){
+    if(e.lengthComputable){
+      var pct=Math.round(e.loaded/e.total*100);
+      document.getElementById('upload-prog-bar').style.width=pct+'%';
+    }
+  };
+  xhr.onload=function(){
+    document.getElementById('upload-prog').style.display='none';
+    try{
+      var result=JSON.parse(xhr.responseText);
+      if(result.error){
+        document.getElementById('upzone').classList.remove('hidden');
+        document.getElementById('upload-err').innerHTML='<div class="ebox">'+result.error+'</div>';
+        return;
+      }
+      fileId=result.fileId;
+      csvHeaders=result.headers;
+      document.getElementById('fpill').classList.remove('hidden');
+      document.getElementById('fpill-n').textContent=result.filename;
+      document.getElementById('fpill-m').textContent=result.rowCount.toLocaleString()+' properties · '+result.headers.length+' columns';
+      setStepDone('step2',result.rowCount.toLocaleString()+' properties');
+      buildMapper(result.headers,result.detected);
+      setStepActive('step3');
+      updateRunBtn();
+    }catch(e){
+      document.getElementById('upzone').classList.remove('hidden');
+      document.getElementById('upload-err').innerHTML='<div class="ebox">Upload failed. Please try again.</div>';
+    }
+  };
+  xhr.onerror=function(){
+    document.getElementById('upload-prog').style.display='none';
+    document.getElementById('upzone').classList.remove('hidden');
+    document.getElementById('upload-err').innerHTML='<div class="ebox">Upload failed. Please try again.</div>';
+  };
+  xhr.open('POST','/api/upload');
+  xhr.send(formData);
+}
+
+function clearCSV(){
+  fileId='';csvHeaders=[];
+  document.getElementById('upzone').classList.remove('hidden');
+  document.getElementById('fpill').classList.add('hidden');
+  document.getElementById('csv-input').value='';
+  document.getElementById('step2').className='step';document.getElementById('s2n').textContent='2';document.getElementById('s2s').textContent='Waiting';
+  document.getElementById('step3').className='step';document.getElementById('step4').className='step';
+  updateRunBtn();
+}
+
+function buildMapper(headers,detected){
+  detected=detected||{};
+  var opts=['— skip —'].concat(headers).map(function(h){return'<option value="'+h+'">'+h+'</option>';}).join('');
+  var defs=[{id:'col-address',lbl:'Street address',def:detected.address},{id:'col-city',lbl:'City',def:detected.city},{id:'col-state',lbl:'State',def:detected.state},{id:'col-zip',lbl:'Zip',def:detected.zip}];
+  document.getElementById('mapper').innerHTML=defs.map(function(d){return'<div class="mrow"><label>'+d.lbl+'</label><select id="'+d.id+'">'+opts+'</select></div>';}).join('');
+  defs.forEach(function(d){var el=document.getElementById(d.id);if(el&&d.def)el.value=d.def;});
+  document.getElementById('col-owner').innerHTML=opts;
+  if(detected.owner)document.getElementById('col-owner').value=detected.owner;
+  setStepDone('step3','Columns mapped');setStepActive('step4');updateRunBtn();
+}
+
+function onImageModeChange(){
+  var mode=document.getElementById('imagemode').value;
+  document.getElementById('pitch-wrap').style.display=(mode==='satellite')?'none':'block';
+  var note=document.getElementById('image-mode-note');
+  if(mode==='satellite'){note.textContent='Satellite only: roof, lot, pool from above. ~$0.002/property.';note.classList.remove('hidden');}
+  else if(mode==='both'){note.textContent='Both images per property. Two independent scores — higher drives priority. ~$0.009/property.';note.classList.remove('hidden');}
+  else note.classList.add('hidden');
+}
+
+function updateRunBtn(){document.getElementById('run-btn').disabled=!(keysSet&&fileId);}
+
+function startScan(){
+  var colMap={
+    address:(document.getElementById('col-address')||{}).value||'',
+    city:(document.getElementById('col-city')||{}).value||'',
+    state:(document.getElementById('col-state')||{}).value||'',
+    zip:(document.getElementById('col-zip')||{}).value||'',
+    owner:document.getElementById('col-owner').value||''
+  };
+  var body={
+    fileId:fileId,colMap:colMap,
+    maxProps:document.getElementById('maxprops').value,
+    threshold:document.getElementById('threshold').value,
+    pitch:document.getElementById('pitch').value,
+    email:document.getElementById('email').value.trim(),
+    imageMode:document.getElementById('imagemode').value,
+    gmapsKey:gmKey,claudeKey:clKey
+  };
+  document.getElementById('run-btn').disabled=true;
+  document.getElementById('run-lbl').innerHTML='<span class="spin"></span> Starting...';
+  document.getElementById('run-err').innerHTML='';
+
+  fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();})
+    .then(function(result){
+      if(result.error){
+        document.getElementById('run-btn').disabled=false;
+        document.getElementById('run-lbl').textContent='Start batch scan';
+        document.getElementById('run-err').innerHTML='<div class="ebox">'+result.error+'</div>';
+        return;
+      }
+      jobId=result.jobId;
+      startTime=Date.now();
+      document.getElementById('run-lbl').textContent='Start batch scan';
+      document.getElementById('progress-section').classList.remove('hidden');
+      document.getElementById('prog-sub').textContent='Fetching images and submitting to Claude...';
+      pollInterval=setInterval(checkStatus,10000);
+      checkStatus();
+    })
+    .catch(function(e){
+      document.getElementById('run-btn').disabled=false;
+      document.getElementById('run-lbl').textContent='Start batch scan';
+      document.getElementById('run-err').innerHTML='<div class="ebox">'+e.message+'</div>';
+    });
+}
+
+function checkStatus(){
+  if(!jobId)return;
+  fetch('/api/status/'+jobId)
+    .then(function(r){return r.json();})
+    .then(function(job){
+      var elapsed=startTime?Math.round((Date.now()-startTime)/1000/60):0;
+      document.getElementById('stat-fetched').textContent=job.fetched||0;
+      document.getElementById('stat-submitted').textContent=job.submitted||0;
+      document.getElementById('stat-elapsed').textContent=elapsed+'m';
+      document.getElementById('prog-bar').style.width=(job.progress||0)+'%';
+
+      var statusLabels={
+        starting:'Starting up...',
+        reading:'Reading CSV...',
+        fetching:'Fetching images ('+Math.round((job.fetched||0)/(job.total||1)*100)+'%)...',
+        submitting:'Submitting to Claude...',
+        processing:'Claude scoring properties...',
+        saving:'Saving results to Google Sheets...',
+        complete:'Complete!',
+        error:'Error'
+      };
+      document.getElementById('poll-status').textContent=statusLabels[job.status]||job.status;
+      document.getElementById('prog-sub').textContent=statusLabels[job.status]||job.status;
+
+      if(job.status==='complete'){
+        clearInterval(pollInterval);
+        document.getElementById('progress-section').classList.add('hidden');
+        document.getElementById('complete-card').classList.remove('hidden');
+        document.getElementById('new-scan-wrap').classList.remove('hidden');
+        document.getElementById('complete-msg').innerHTML='Results saved to Google Sheets. <a href="'+job.sheetUrl+'" target="_blank" class="status-link">Open Sheet →</a>';
+      }else if(job.status==='error'){
+        clearInterval(pollInterval);
+        document.getElementById('progress-section').classList.add('hidden');
+        document.getElementById('error-card').classList.remove('hidden');
+        document.getElementById('new-scan-wrap').classList.remove('hidden');
+        document.getElementById('error-msg').textContent=job.error||'Unknown error';
+      }
+    })
+    .catch(function(){});
+}
+
+function resetForm(){
+  clearInterval(pollInterval);jobId=null;startTime=null;
+  document.getElementById('progress-section').classList.add('hidden');
+  document.getElementById('complete-card').classList.add('hidden');
+  document.getElementById('error-card').classList.add('hidden');
+  document.getElementById('new-scan-wrap').classList.add('hidden');
+  document.getElementById('run-btn').disabled=false;
+  document.getElementById('run-lbl').textContent='Start batch scan';
+  clearCSV();
+}
+
+function toggleStep(id){var el=document.getElementById(id);if(el.classList.contains('open'))el.classList.remove('open');else el.classList.add('open');}
+function setStepActive(id){document.getElementById(id).className='step active';}
+function setStepDone(id,status){
+  document.getElementById(id).className='step done';
+  var num=id.replace('step','');
+  document.getElementById('s'+num+'n').textContent='✓';
+  document.getElementById('s'+num+'s').textContent=status;
+}
+</script>
+</body>
+</html>
