@@ -254,7 +254,7 @@ body{font-family:'Geist',sans-serif;background:var(--bg);color:var(--text);min-h
       <div class="prog-bar-wrap"><div class="prog-bar" id="prog-bar" style="width:0%"></div></div>
       <div class="stat-row">
         <div class="stat"><div class="stat-val" id="stat-fetched">0</div><div class="stat-lbl">Fetched</div></div>
-        <div class="stat"><div class="stat-val" id="stat-submitted">0</div><div class="stat-lbl">Submitted</div></div>
+        <div class="stat"><div class="stat-val" id="stat-chunks">0</div><div class="stat-lbl">Chunks done</div></div>
         <div class="stat"><div class="stat-val" id="stat-elapsed">0m</div><div class="stat-lbl">Elapsed</div></div>
       </div>
       <div class="poll-row"><div class="poll-dot"></div><span id="poll-status">Processing...</span></div>
@@ -453,15 +453,14 @@ function checkStatus(){
       var statusLabels={
         starting:'Starting up...',
         reading:'Reading CSV...',
-        fetching:'Fetching images ('+Math.round((job.fetched||0)/(job.total||1)*100)+'%)...',
-        submitting:'Submitting to Claude...',
-        processing:'Claude scoring properties...',
-        saving:'Saving results to Google Sheets...',
         complete:'Complete!',
         error:'Error'
       };
-      document.getElementById('poll-status').textContent=statusLabels[job.status]||job.status;
-      document.getElementById('prog-sub').textContent=statusLabels[job.status]||job.status;
+      var label = statusLabels[job.status] || job.status;
+      document.getElementById('poll-status').textContent=label;
+      document.getElementById('prog-sub').textContent=label;
+      document.getElementById('stat-fetched').textContent=(job.fetched||0).toLocaleString();
+      document.getElementById('stat-chunks').textContent=(job.chunksComplete||0)+'/'+(job.totalChunks||'?');
 
       if(job.status==='complete'){
         clearInterval(pollInterval);
