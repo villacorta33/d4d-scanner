@@ -247,19 +247,35 @@ OUTPUT — raw JSON only, no markdown, no backticks, no explanation:
 
 // ── CSV STREAMING ──────────────────────────────────────────────────────────
 
-function parseCSVStream(filePath, maxRows) {
+// Stream CSV and extract only the address fields we need — never holds full records
+function extractAddresses(filePath, colMap, maxRows) {
   return new Promise((resolve, reject) => {
-    const records = [];
-    const stream  = fs.createReadStream(filePath);
-    const parser  = parse({ columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true });
+    const addrList = [];
+    const stream   = fs.createReadStream(filePath);
+    const parser   = parse({ columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true });
     parser.on('readable', () => {
-      let record;
-      while ((record = parser.read()) !== null) {
-        if (!maxRows || records.length < maxRows) records.push(record);
+      let row;
+      while ((row = parser.read()) !== null) {
+        if (maxRows && addrList.length >= maxRows) { parser.destroy(); break; }
+        const parts = [
+          (row[colMap.address] || '').trim(),
+          (row[colMap.city]    || '').trim(),
+          (row[colMap.state]   || '').trim(),
+          (row[colMap.zip]     || '').trim()
+        ].filter(p => p);
+        if (parts.length) {
+          addrList.push({
+            index:       addrList.length,
+            fullAddress: parts.join(', '),
+            owner:       (row[colMap.owner] || '').trim()
+          });
+        }
+        // Free the row immediately — don't hold it
       }
     });
     parser.on('error', reject);
-    parser.on('end', () => resolve(records));
+    parser.on('end',   () => resolve(addrList));
+    parser.on('close', () => resolve(addrList));
     stream.pipe(parser);
   });
 }
@@ -394,23 +410,49 @@ async function pollClaudeBatch(batchId, claudeKey) {
 }
 
 async function fetchClaudeBatchResults(batchId, claudeKey) {
-  const r = await axios.get(`https://api.anthropic.com/v1/messages/batches/${batchId}/results`, {
+  // Stream the JSONL results to avoid loading huge responses into memory
+  const response = await axios.get(`https://api.anthropic.com/v1/messages/batches/${batchId}/results`, {
     headers: { 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'message-batches-2024-09-24' },
-    responseType: 'text'
+    responseType: 'stream'
   });
-  const resultMap = {};
-  for (const line of r.data.split('\n').filter(l => l.trim())) {
-    try {
-      const obj = JSON.parse(line);
-      const key = obj.custom_id || '';
-      let text = '';
-      if (obj.result && obj.result.type === 'succeeded') text = obj.result.message.content[0].text || '';
-      text = text.replace(/```json|```/g, '').trim();
-      const m = text.match(/\{[\s\S]*\}/);
-      try { resultMap[key] = JSON.parse(m ? m[0] : text); } catch(e) { resultMap[key] = {}; }
-    } catch(e) {}
-  }
-  return resultMap;
+
+  return new Promise((resolve, reject) => {
+    const resultMap = {};
+    let buffer = '';
+    response.data.on('data', chunk => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line in buffer
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          const key = obj.custom_id || '';
+          let text = '';
+          if (obj.result && obj.result.type === 'succeeded') text = obj.result.message.content[0].text || '';
+          text = text.replace(/```json|```/g, '').trim();
+          const m = text.match(/\{[\s\S]*\}/);
+          try { resultMap[key] = JSON.parse(m ? m[0] : text); } catch(e) { resultMap[key] = {}; }
+        } catch(e) {}
+      }
+    });
+    response.data.on('end', () => {
+      // Process any remaining buffer
+      if (buffer.trim()) {
+        try {
+          const obj = JSON.parse(buffer);
+          const key = obj.custom_id || '';
+          let text = '';
+          if (obj.result && obj.result.type === 'succeeded') text = obj.result.message.content[0].text || '';
+          text = text.replace(/```json|```/g, '').trim();
+          const m = text.match(/\{[\s\S]*\}/);
+          try { resultMap[key] = JSON.parse(m ? m[0] : text); } catch(e) { resultMap[key] = {}; }
+        } catch(e) {}
+      }
+      resolve(resultMap);
+    });
+    response.data.on('error', reject);
+  });
 }
 
 function parseResult(p) {
@@ -478,24 +520,12 @@ const CHUNK_SIZE = 5000;
 async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email, imageMode, gmapsKey, claudeKey) {
   const job = jobs[jobId];
   try {
-    // 1. Stream-parse CSV
+    // 1. Stream CSV — extract only addresses, never hold full records
     job.status = 'reading';
-    const csvPath = `uploads/${fileId}.csv`;
-    const records = await parseCSVStream(csvPath, maxProps);
+    const csvPath  = `uploads/${fileId}.csv`;
+    const addrList = await extractAddresses(csvPath, colMap, maxProps);
     try { fs.unlinkSync(csvPath); } catch(e) {}
-    job.total = records.length;
-
-    // 2. Build address list
-    const addrList = [];
-    records.forEach((row, idx) => {
-      const parts = [
-        (row[colMap.address] || '').trim(),
-        (row[colMap.city]    || '').trim(),
-        (row[colMap.state]   || '').trim(),
-        (row[colMap.zip]     || '').trim()
-      ].filter(p => p);
-      if (parts.length) addrList.push({ index: idx, fullAddress: parts.join(', '), owner: (row[colMap.owner] || '').trim() });
-    });
+    job.total = addrList.length;
     if (!addrList.length) throw new Error('No valid addresses found. Check column mapping.');
 
     // 3. Split into chunks of 5000
@@ -514,40 +544,41 @@ async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email,
       job.currentChunk = ci + 1;
       job.status = `fetching (chunk ${ci + 1}/${chunks.length})`;
 
-      // Fetch images for this chunk
-      const imgData = [];
+      // Fetch images for this chunk — process one at a time, don't hold all in memory
+      const chunkRequests = [];
+      let chunkFetched = 0;
       for (const item of chunk) {
         let sv = null, sat = null;
         if (imageMode === 'streetview' || imageMode === 'both') sv  = await fetchStreetView(item.fullAddress, gmapsKey, pitch);
         if (imageMode === 'satellite'  || imageMode === 'both') sat = await fetchSatellite(item.fullAddress, gmapsKey);
         const ok = (sv && sv.ok) || (sat && sat.ok);
-        if (ok) totalFetched++;
-        imgData.push({ ...item, sv, sat, ok });
+        if (ok) {
+          totalFetched++;
+          chunkFetched++;
+          // Build Claude requests immediately and discard image data
+          if (imageMode === 'streetview' && sv?.ok)      chunkRequests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, sv));
+          else if (imageMode === 'satellite' && sat?.ok) chunkRequests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  sat));
+          else if (imageMode === 'both') {
+            if (sv?.ok)  chunkRequests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, sv));
+            if (sat?.ok) chunkRequests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  sat));
+          }
+        }
+        // Clear image data from memory immediately
+        sv = null; sat = null;
         job.fetched  = totalFetched;
-        // Progress: 0-80% across all chunks during fetching
-        job.progress = Math.round(((ci * CHUNK_SIZE + imgData.length) / addrList.length) * 80);
+        job.progress = Math.round(((ci * CHUNK_SIZE + chunkFetched) / addrList.length) * 80);
         await new Promise(r => setTimeout(r, 50));
       }
+      const imgData = []; // not used anymore but keep for compatibility
 
-      // Build batch requests for this chunk
-      const requests = [];
-      for (const item of imgData) {
-        if (!item.ok) continue;
-        if (imageMode === 'streetview' && item.sv?.ok)      requests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, item.sv));
-        else if (imageMode === 'satellite' && item.sat?.ok) requests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  item.sat));
-        else if (imageMode === 'both') {
-          if (item.sv?.ok)  requests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, item.sv));
-          if (item.sat?.ok) requests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  item.sat));
-        }
-      }
-
-      if (!requests.length) { job.chunksComplete++; continue; }
-      job.submitted += requests.length;
+      if (!chunkRequests.length) { job.chunksComplete++; continue; }
+      job.submitted += chunkRequests.length;
 
       // Submit chunk batch to Claude
       job.status = `submitting (chunk ${ci + 1}/${chunks.length})`;
-      const batchId = await submitClaudeBatch(requests, claudeKey);
+      const batchId = await submitClaudeBatch(chunkRequests, claudeKey);
       job.batchId   = batchId;
+      chunkRequests.length = 0; // free memory immediately after submit
 
       // Poll until this chunk is done
       job.status = `scoring (chunk ${ci + 1}/${chunks.length})`;
@@ -557,7 +588,7 @@ async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email,
         const bs     = await pollClaudeBatch(batchId, claudeKey);
         const counts = bs.request_counts || {};
         const done   = (counts.succeeded || 0) + (counts.errored || 0);
-        const total  = counts.processing !== undefined ? (counts.processing + done) : requests.length;
+        const total  = counts.processing !== undefined ? (counts.processing + done) : job.submitted;
         // Progress: 80-95% during Claude scoring
         const chunkPct = done / Math.max(total, 1);
         job.progress   = 80 + Math.round(((ci + chunkPct) / chunks.length) * 15);
@@ -585,6 +616,8 @@ async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email,
       }
 
       job.chunksComplete++;
+      // Free chunk image data from memory immediately
+      imgData.length = 0;
       console.log(`Chunk ${ci + 1}/${chunks.length} complete. Total results so far: ${allResults.length}`);
     }
 
