@@ -1,12 +1,13 @@
 const express    = require('express');
 const multer     = require('multer');
 const axios      = require('axios');
-const { parse }  = require('csv-parse/sync');
+const { parse }  = require('csv-parse');
 const { google } = require('googleapis');
 const nodemailer = require('nodemailer');
 const { v4: uuidv4 } = require('uuid');
 const fs         = require('fs');
 const path       = require('path');
+const readline   = require('readline');
 
 const app    = express();
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 500 * 1024 * 1024 } }); // 500MB limit
@@ -286,15 +287,48 @@ OUTPUT — raw JSON only, no markdown, no backticks, no explanation:
 
 // ── HELPERS ────────────────────────────────────────────────────────────────
 
-function parseCSVContent(content) {
-  const records = parse(content, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true,
-    relax_quotes: true,
-    relax_column_count: true
+// Stream-parse CSV — never loads full file into memory
+function parseCSVStream(filePath, maxRows) {
+  return new Promise((resolve, reject) => {
+    const records = [];
+    const stream  = fs.createReadStream(filePath);
+    const parser  = parse({ columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true });
+    parser.on('readable', () => {
+      let record;
+      while ((record = parser.read()) !== null) {
+        if (!maxRows || records.length < maxRows) records.push(record);
+      }
+    });
+    parser.on('error', reject);
+    parser.on('end', () => resolve(records));
+    stream.pipe(parser);
   });
-  return records;
+}
+
+// Read only headers and row count — very fast, minimal memory
+function getCSVMeta(filePath) {
+  return new Promise((resolve, reject) => {
+    const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+    let lineCount = 0;
+    let headers   = null;
+    rl.on('line', (line) => {
+      if (lineCount === 0) {
+        // Parse header line
+        const cols = [];
+        let cur = '', inQ = false;
+        for (const c of line) {
+          if (c === '"') inQ = !inQ;
+          else if (c === ',' && !inQ) { cols.push(cur.replace(/^"|"$/g, '').trim()); cur = ''; }
+          else cur += c;
+        }
+        cols.push(cur.replace(/^"|"$/g, '').trim());
+        headers = cols;
+      }
+      lineCount++;
+    });
+    rl.on('close', () => resolve({ headers, rowCount: Math.max(0, lineCount - 1) }));
+    rl.on('error', reject);
+  });
 }
 
 function detectColumns(headers) {
@@ -550,27 +584,20 @@ async function createSheet(results, threshold, imageMode) {
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Upload CSV and get headers
-app.post('/api/upload', upload.single('csv'), (req, res) => {
+app.post('/api/upload', upload.single('csv'), async (req, res) => {
   try {
     if (!req.file) return res.json({ error: 'No file uploaded' });
-    const content = fs.readFileSync(req.file.path, 'utf8');
-    const records = parseCSVContent(content);
-    if (!records.length) {
-      fs.unlinkSync(req.file.path);
-      return res.json({ error: 'CSV appears empty' });
+    const fileId  = uuidv4();
+    const newPath = `uploads/${fileId}.csv`;
+    fs.renameSync(req.file.path, newPath);
+    // Only read headers + row count — stream-based, no memory spike
+    const { headers, rowCount } = await getCSVMeta(newPath);
+    if (!headers || !headers.length) {
+      fs.unlinkSync(newPath);
+      return res.json({ error: 'CSV appears empty or invalid' });
     }
-    const headers  = Object.keys(records[0]);
     const detected = detectColumns(headers);
-    // Store file path temporarily
-    const fileId = uuidv4();
-    fs.renameSync(req.file.path, `uploads/${fileId}.csv`);
-    res.json({
-      fileId,
-      headers,
-      detected,
-      rowCount: records.length,
-      filename: req.file.originalname
-    });
+    res.json({ fileId, headers, detected, rowCount, filename: req.file.originalname });
   } catch(e) {
     res.json({ error: e.message });
   }
@@ -630,11 +657,10 @@ app.get('/', (req, res) => {
 async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email, imageMode, gmapsKey, claudeKey) {
   const job = jobs[jobId];
   try {
-    // Read CSV
+    // Read CSV via stream — no memory spike regardless of file size
     job.status = 'reading';
     const csvPath = `uploads/${fileId}.csv`;
-    const content = fs.readFileSync(csvPath, 'utf8');
-    const records = parseCSVContent(content);
+    const records = await parseCSVStream(csvPath, maxProps);
     fs.unlinkSync(csvPath);
 
     const rows = records.slice(0, maxProps);
