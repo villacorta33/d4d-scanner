@@ -515,7 +515,7 @@ app.get('/', (req, res) => {
 
 // ── SCAN RUNNER ────────────────────────────────────────────────────────────
 
-const CHUNK_SIZE = 5000;
+const CHUNK_SIZE = 500;
 
 async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email, imageMode, gmapsKey, claudeKey) {
   const job = jobs[jobId];
