@@ -316,14 +316,29 @@ function buildCSV(results, imageMode) {
   return rows.join('\n');
 }
 
+// ── URL SIGNING ────────────────────────────────────────────────────────────
+
+const crypto = require('crypto');
+
+function signGoogleUrl(urlStr, secret) {
+  try {
+    const url      = new URL(urlStr);
+    const toSign   = url.pathname + url.search;
+    const keyBytes = Buffer.from(secret.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+    const sig      = crypto.createHmac('sha1', keyBytes).update(toSign).digest('base64')
+                       .replace(/\+/g, '-').replace(/\//g, '_');
+    return urlStr + '&signature=' + sig;
+  } catch(e) { return urlStr; }
+}
+
 // ── IMAGE FETCHING ─────────────────────────────────────────────────────────
 
 async function fetchStreetView(address, gmapsKey, pitch = '5') {
   try {
-    const r = await axios.get(
-      `https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${encodeURIComponent(address)}&key=${gmapsKey}&fov=90&pitch=${pitch}`,
-      { responseType: 'arraybuffer', timeout: 15000 }
-    );
+    const secret  = process.env.GMAPS_SIGNING_SECRET;
+    let url = `https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${encodeURIComponent(address)}&key=${gmapsKey}&fov=90&pitch=${pitch}`;
+    if (secret) url = signGoogleUrl(url, secret);
+    const r = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
     const ct = r.headers['content-type'] || 'image/jpeg';
     if (!ct.includes('image')) return { ok: false };
     return { ok: true, b64: Buffer.from(r.data).toString('base64'), mime: ct.split(';')[0] };
@@ -332,16 +347,16 @@ async function fetchStreetView(address, gmapsKey, pitch = '5') {
 
 async function fetchSatellite(address, gmapsKey) {
   try {
-    const geoR = await axios.get(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${gmapsKey}`, { timeout: 10000 });
-    let center = encodeURIComponent(address);
+    const secret = process.env.GMAPS_SIGNING_SECRET;
+    const geoR   = await axios.get(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${gmapsKey}`, { timeout: 10000 });
+    let center   = encodeURIComponent(address);
     if (geoR.data.results && geoR.data.results[0]) {
       const loc = geoR.data.results[0].geometry.location;
       center = `${loc.lat},${loc.lng}`;
     }
-    const r = await axios.get(
-      `https://maps.googleapis.com/maps/api/staticmap?center=${center}&zoom=20&size=640x640&maptype=satellite&markers=color:red|${center}&key=${gmapsKey}`,
-      { responseType: 'arraybuffer', timeout: 15000 }
-    );
+    let url = `https://maps.googleapis.com/maps/api/staticmap?center=${center}&zoom=20&size=640x640&maptype=satellite&markers=color:red|${center}&key=${gmapsKey}`;
+    if (secret) url = signGoogleUrl(url, secret);
+    const r = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
     const ct = r.headers['content-type'] || 'image/jpeg';
     if (!ct.includes('image')) return { ok: false };
     return { ok: true, b64: Buffer.from(r.data).toString('base64'), mime: ct.split(';')[0] };
@@ -425,7 +440,13 @@ app.post('/api/scan', async (req, res) => {
   if (!gmapsKey || !claudeKey) return res.json({ error: 'API keys not set' });
   if (!fileId) return res.json({ error: 'No file uploaded' });
   const jobId = uuidv4();
-  jobs[jobId] = { status: 'starting', progress: 0, total: 0, fetched: 0, submitted: 0, batchId: null, downloadId: null, error: null, startTime: Date.now(), imageMode: imageMode || 'streetview' };
+  jobs[jobId] = {
+    status: 'starting', progress: 0,
+    total: 0, fetched: 0, submitted: 0,
+    totalChunks: 0, currentChunk: 0, chunksComplete: 0,
+    batchId: null, downloadId: null, error: null,
+    startTime: Date.now(), imageMode: imageMode || 'streetview'
+  };
   res.json({ jobId });
   runScan(jobId, fileId, colMap, parseInt(maxProps) || 999999, parseInt(threshold) || 7, pitch || '5', email || '', imageMode || 'streetview', gmapsKey, claudeKey);
 });
@@ -452,15 +473,19 @@ app.get('/', (req, res) => {
 
 // ── SCAN RUNNER ────────────────────────────────────────────────────────────
 
+const CHUNK_SIZE = 5000;
+
 async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email, imageMode, gmapsKey, claudeKey) {
   const job = jobs[jobId];
   try {
+    // 1. Stream-parse CSV
     job.status = 'reading';
     const csvPath = `uploads/${fileId}.csv`;
     const records = await parseCSVStream(csvPath, maxProps);
     try { fs.unlinkSync(csvPath); } catch(e) {}
     job.total = records.length;
 
+    // 2. Build address list
     const addrList = [];
     records.forEach((row, idx) => {
       const parts = [
@@ -473,83 +498,109 @@ async function runScan(jobId, fileId, colMap, maxProps, threshold, pitch, email,
     });
     if (!addrList.length) throw new Error('No valid addresses found. Check column mapping.');
 
-    job.status = 'fetching';
-    const imgData = [];
-    let fetched = 0;
-    for (const item of addrList) {
-      let sv = null, sat = null;
-      if (imageMode === 'streetview' || imageMode === 'both') sv  = await fetchStreetView(item.fullAddress, gmapsKey, pitch);
-      if (imageMode === 'satellite'  || imageMode === 'both') sat = await fetchSatellite(item.fullAddress, gmapsKey);
-      const ok = (sv && sv.ok) || (sat && sat.ok);
-      if (ok) fetched++;
-      imgData.push({ ...item, sv, sat, ok });
-      job.fetched  = fetched;
-      job.progress = Math.round((fetched / addrList.length) * 30);
-      await new Promise(r => setTimeout(r, 100));
+    // 3. Split into chunks of 5000
+    const chunks = [];
+    for (let i = 0; i < addrList.length; i += CHUNK_SIZE) {
+      chunks.push(addrList.slice(i, i + CHUNK_SIZE));
     }
-    if (fetched === 0) throw new Error('Could not fetch any images. Check API keys and billing.');
+    job.totalChunks = chunks.length;
 
-    job.status = 'submitting';
-    const requests = [];
-    for (const item of imgData) {
-      if (!item.ok) continue;
-      if (imageMode === 'streetview' && item.sv?.ok)  requests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, item.sv));
-      else if (imageMode === 'satellite' && item.sat?.ok) requests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE, item.sat));
-      else if (imageMode === 'both') {
-        if (item.sv?.ok)  requests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, item.sv));
-        if (item.sat?.ok) requests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  item.sat));
+    // 4. Process each chunk
+    const allResults = [];
+    let totalFetched = 0;
+
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunk = chunks[ci];
+      job.currentChunk = ci + 1;
+      job.status = `fetching (chunk ${ci + 1}/${chunks.length})`;
+
+      // Fetch images for this chunk
+      const imgData = [];
+      for (const item of chunk) {
+        let sv = null, sat = null;
+        if (imageMode === 'streetview' || imageMode === 'both') sv  = await fetchStreetView(item.fullAddress, gmapsKey, pitch);
+        if (imageMode === 'satellite'  || imageMode === 'both') sat = await fetchSatellite(item.fullAddress, gmapsKey);
+        const ok = (sv && sv.ok) || (sat && sat.ok);
+        if (ok) totalFetched++;
+        imgData.push({ ...item, sv, sat, ok });
+        job.fetched  = totalFetched;
+        // Progress: 0-80% across all chunks during fetching
+        job.progress = Math.round(((ci * CHUNK_SIZE + imgData.length) / addrList.length) * 80);
+        await new Promise(r => setTimeout(r, 50));
       }
+
+      // Build batch requests for this chunk
+      const requests = [];
+      for (const item of imgData) {
+        if (!item.ok) continue;
+        if (imageMode === 'streetview' && item.sv?.ok)      requests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, item.sv));
+        else if (imageMode === 'satellite' && item.sat?.ok) requests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  item.sat));
+        else if (imageMode === 'both') {
+          if (item.sv?.ok)  requests.push(buildClaudeRequest(`sv_${item.index}`,  PROMPT_STREETVIEW, item.sv));
+          if (item.sat?.ok) requests.push(buildClaudeRequest(`sat_${item.index}`, PROMPT_SATELLITE,  item.sat));
+        }
+      }
+
+      if (!requests.length) { job.chunksComplete++; continue; }
+      job.submitted += requests.length;
+
+      // Submit chunk batch to Claude
+      job.status = `submitting (chunk ${ci + 1}/${chunks.length})`;
+      const batchId = await submitClaudeBatch(requests, claudeKey);
+      job.batchId   = batchId;
+
+      // Poll until this chunk is done
+      job.status = `scoring (chunk ${ci + 1}/${chunks.length})`;
+      let complete = false;
+      while (!complete) {
+        await new Promise(r => setTimeout(r, 30000));
+        const bs     = await pollClaudeBatch(batchId, claudeKey);
+        const counts = bs.request_counts || {};
+        const done   = (counts.succeeded || 0) + (counts.errored || 0);
+        const total  = counts.processing !== undefined ? (counts.processing + done) : requests.length;
+        // Progress: 80-95% during Claude scoring
+        const chunkPct = done / Math.max(total, 1);
+        job.progress   = 80 + Math.round(((ci + chunkPct) / chunks.length) * 15);
+        if (bs.processing_status === 'ended') complete = true;
+        else if (['errored', 'expired', 'cancelled'].includes(bs.processing_status)) throw new Error(`Batch job ${bs.processing_status} on chunk ${ci + 1}`);
+      }
+
+      // Fetch results for this chunk
+      const resultMap = await fetchClaudeBatchResults(batchId, claudeKey);
+
+      // Build results for this chunk
+      for (const item of chunk) {
+        if (imageMode === 'streetview') {
+          const p = parseResult(resultMap[`sv_${item.index}`] || {});
+          allResults.push({ 'Full Address': item.fullAddress, 'Owner': item.owner, 'Score': p.score, 'Priority': p.score >= threshold ? 'hot' : p.score >= 5 ? 'warm' : 'skip', 'Vacant': p.vacant ? 'YES' : 'NO', 'AI Notes': p.notes });
+        } else if (imageMode === 'satellite') {
+          const p = parseResult(resultMap[`sat_${item.index}`] || {});
+          allResults.push({ 'Full Address': item.fullAddress, 'Owner': item.owner, 'Satellite Score': p.score, 'Priority': p.score >= threshold ? 'hot' : p.score >= 5 ? 'warm' : 'skip', 'Vacant': p.vacant ? 'YES' : 'NO', 'AI Notes': p.notes });
+        } else {
+          const sv  = parseResult(resultMap[`sv_${item.index}`]  || {});
+          const sat = parseResult(resultMap[`sat_${item.index}`] || {});
+          const h   = Math.max(sv.score, sat.score);
+          allResults.push({ 'Full Address': item.fullAddress, 'Owner': item.owner, 'Street View Score': sv.score, 'Satellite Score': sat.score, 'Priority': h >= threshold ? 'hot' : h >= 5 ? 'warm' : 'skip', 'Vacant': (sv.vacant || sat.vacant) ? 'YES' : 'NO', 'AI Notes': [sv.notes && `Street View: ${sv.notes}`, sat.notes && `Satellite: ${sat.notes}`].filter(Boolean).join(' | ') });
+        }
+      }
+
+      job.chunksComplete++;
+      console.log(`Chunk ${ci + 1}/${chunks.length} complete. Total results so far: ${allResults.length}`);
     }
-    if (!requests.length) throw new Error('No images available to submit.');
-    job.submitted = requests.length;
 
-    const batchId = await submitClaudeBatch(requests, claudeKey);
-    job.batchId  = batchId;
-    job.status   = 'processing';
-    job.progress = 35;
-
-    let complete = false;
-    while (!complete) {
-      await new Promise(r => setTimeout(r, 30000));
-      const bs     = await pollClaudeBatch(batchId, claudeKey);
-      const counts = bs.request_counts || {};
-      const done   = (counts.succeeded || 0) + (counts.errored || 0);
-      const total  = counts.processing !== undefined ? (counts.processing + done) : requests.length;
-      job.progress = 35 + Math.round((done / Math.max(total, 1)) * 55);
-      if (bs.processing_status === 'ended') complete = true;
-      else if (['errored', 'expired', 'cancelled'].includes(bs.processing_status)) throw new Error(`Batch job ${bs.processing_status}`);
-    }
-
+    // 5. Save final CSV
     job.status   = 'saving';
-    job.progress = 92;
-    const resultMap = await fetchClaudeBatchResults(batchId, claudeKey);
-
-    const results = [];
-    for (const item of addrList) {
-      if (imageMode === 'streetview') {
-        const p = parseResult(resultMap[`sv_${item.index}`] || {});
-        results.push({ 'Full Address': item.fullAddress, 'Owner': item.owner, 'Score': p.score, 'Priority': p.score >= threshold ? 'hot' : p.score >= 5 ? 'warm' : 'skip', 'Vacant': p.vacant ? 'YES' : 'NO', 'AI Notes': p.notes });
-      } else if (imageMode === 'satellite') {
-        const p = parseResult(resultMap[`sat_${item.index}`] || {});
-        results.push({ 'Full Address': item.fullAddress, 'Owner': item.owner, 'Satellite Score': p.score, 'Priority': p.score >= threshold ? 'hot' : p.score >= 5 ? 'warm' : 'skip', 'Vacant': p.vacant ? 'YES' : 'NO', 'AI Notes': p.notes });
-      } else {
-        const sv  = parseResult(resultMap[`sv_${item.index}`]  || {});
-        const sat = parseResult(resultMap[`sat_${item.index}`] || {});
-        const h   = Math.max(sv.score, sat.score);
-        results.push({ 'Full Address': item.fullAddress, 'Owner': item.owner, 'Street View Score': sv.score, 'Satellite Score': sat.score, 'Priority': h >= threshold ? 'hot' : h >= 5 ? 'warm' : 'skip', 'Vacant': (sv.vacant || sat.vacant) ? 'YES' : 'NO', 'AI Notes': [sv.notes && `Street View: ${sv.notes}`, sat.notes && `Satellite: ${sat.notes}`].filter(Boolean).join(' | ') });
-      }
-    }
-
+    job.progress = 97;
     const downloadId = uuidv4();
-    fs.writeFileSync(`results/${downloadId}.csv`, buildCSV(results, imageMode));
+    fs.writeFileSync(`results/${downloadId}.csv`, buildCSV(allResults, imageMode));
     job.downloadId   = downloadId;
     job.status       = 'complete';
     job.progress     = 100;
-    job.total_scored = results.length;
-    job.hot  = results.filter(r => r['Priority'] === 'hot').length;
-    job.warm = results.filter(r => r['Priority'] === 'warm').length;
-    job.skip = results.filter(r => r['Priority'] === 'skip').length;
-    job.vac  = results.filter(r => r['Vacant']   === 'YES').length;
+    job.total_scored = allResults.length;
+    job.hot  = allResults.filter(r => r['Priority'] === 'hot').length;
+    job.warm = allResults.filter(r => r['Priority'] === 'warm').length;
+    job.skip = allResults.filter(r => r['Priority'] === 'skip').length;
+    job.vac  = allResults.filter(r => r['Vacant']   === 'YES').length;
 
   } catch(e) {
     job.status = 'error';
