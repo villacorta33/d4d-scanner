@@ -11,6 +11,9 @@ const path       = require('path');
 const app    = express();
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 500 * 1024 * 1024 } }); // 500MB limit
 
+// Ensure uploads directory exists
+if (!fs.existsSync('uploads')) fs.mkdirSync('uploads', { recursive: true });
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(__dirname)); // fallback to root
