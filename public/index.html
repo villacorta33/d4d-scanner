@@ -468,7 +468,13 @@ function checkStatus(){
         document.getElementById('progress-section').classList.add('hidden');
         document.getElementById('complete-card').classList.remove('hidden');
         document.getElementById('new-scan-wrap').classList.remove('hidden');
-        document.getElementById('complete-msg').innerHTML='Results saved to Google Sheets. <a href="'+job.sheetUrl+'" target="_blank" class="status-link">Open Sheet →</a>';
+        document.getElementById('complete-msg').innerHTML=
+          (job.total_scored||0)+' properties scored — '
+          +'<strong style="color:var(--red)">'+job.hot+' hot</strong>, '
+          +'<strong style="color:var(--amber)">'+job.warm+' warm</strong>, '
+          +job.skip+' skip, '
+          +job.vac+' vacant<br><br>'
+          +'<a href="/api/download/'+job.downloadId+'" style="display:inline-block;margin-top:4px;padding:10px 20px;background:var(--lime);color:#080808;font-weight:700;border-radius:8px;text-decoration:none;font-family:Geist,sans-serif">⬇ Download Results CSV</a>';
       }else if(job.status==='error'){
         clearInterval(pollInterval);
         document.getElementById('progress-section').classList.add('hidden');
