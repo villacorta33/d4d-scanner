@@ -12,7 +12,8 @@ const app    = express();
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 500 * 1024 * 1024 } }); // 500MB limit
 
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname)); // fallback to root
 
 // ── IN-MEMORY JOB STORE ────────────────────────────────────────────────────
 const jobs = {};
@@ -610,7 +611,15 @@ app.get('/api/status/:jobId', (req, res) => {
 
 // Serve frontend
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  const publicPath = path.join(__dirname, 'public', 'index.html');
+  const rootPath   = path.join(__dirname, 'index.html');
+  if (fs.existsSync(publicPath)) {
+    res.sendFile(publicPath);
+  } else if (fs.existsSync(rootPath)) {
+    res.sendFile(rootPath);
+  } else {
+    res.send('D4D Scanner is running. index.html not found — check your file structure.');
+  }
 });
 
 // ── SCAN RUNNER ────────────────────────────────────────────────────────────
